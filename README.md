@@ -11,6 +11,8 @@ Create or reuse a Windows 11 Dev Drive on an Azure Virtual Desktop (AVD) session
 | `SizeGB` | `50` (minimum; PowerShell GB units, 1 GB = 1,073,741,824 bytes) |
 | `VolumeLabel` | `Dev Drive` |
 
+VHDX paths used for new disks must contain only printable ASCII characters because the DiskPart command file uses ASCII encoding. Spaces are supported.
+
 New disks are dynamically expanding VHDX files, formatted as ReFS with the Dev Drive designation. The VHDX capacity is 50 GB; usable volume capacity is slightly smaller due to partition/filesystem overhead.
 
 Edit the defaults in the configuration block at the top of the script, or supply them as command-line parameters. The script is organized into numbered steps with progress messages. The previous `-Path` and `-Name` parameter names remain available as aliases.
@@ -48,7 +50,7 @@ Drive mappings in another user's session may not be visible from the elevated se
 
 ## Validation
 
-Run the non-destructive parser and drive-letter safety tests:
+Run the non-destructive parser, DiskPart command-file encoding, and drive-letter safety tests:
 
 ```powershell
 .\tests\Test-Safety.ps1

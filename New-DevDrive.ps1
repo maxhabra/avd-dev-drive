@@ -119,6 +119,10 @@ try {
     # 3. Check free space for a new VHDX
     # ------------------------------------------------------------
     if (-not $VhdExists) {
+        # DiskPart's command file uses ASCII; reject paths that would be corrupted.
+        if ($VhdPath -match '[^\x20-\x7E]') {
+            throw 'Creating a VHDX requires a path containing only printable ASCII characters.'
+        }
         # Keep the requested VHDX capacity exact. Its usable volume is slightly smaller.
         $SizeBytes = [uint64] $SizeGB * 1GB
         $BackingVolume = Get-Volume -FilePath ([IO.Path]::GetPathRoot($VhdPath))
@@ -153,8 +157,9 @@ try {
         $DiskPartScript = [IO.Path]::GetTempFileName()
         try {
             $SizeMB = [uint64] $SizeGB * 1024
-            @("create vdisk file=`"$VhdPath`" maximum=$SizeMB type=expandable", 'exit') |
-                Set-Content -LiteralPath $DiskPartScript -Encoding Unicode
+            # DiskPart rejects the UTF-16 command file produced by -Encoding Unicode.
+            $DiskPartCommands = "create vdisk file=`"$VhdPath`" maximum=$SizeMB type=expandable`r`nexit`r`n"
+            $DiskPartCommands | Set-Content -LiteralPath $DiskPartScript -Encoding ASCII -NoNewline
             $DiskPartOutput = & "$env:SystemRoot\System32\diskpart.exe" /s $DiskPartScript 2>&1
             $DiskPartExitCode = $LASTEXITCODE
             Write-Verbose ($DiskPartOutput -join [Environment]::NewLine)

@@ -5,6 +5,37 @@ $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref] $tokens, [ref] $parseErrors)
 if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+
+# Execute the actual command-file generation statements, without launching DiskPart.
+$commandAssignment = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -eq '$DiskPartCommands'
+}, $true)
+$commandWrite = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.PipelineAst] -and
+    $node.Extent.Text -like '$DiskPartCommands | Set-Content*'
+}, $true)
+if ($null -eq $commandAssignment -or $null -eq $commandWrite) {
+    throw 'Cannot locate DiskPart command-file generation statements.'
+}
+$DiskPartScript = [IO.Path]::GetTempFileName()
+try {
+    $VhdPath = 'C:\Dev Drive\DevDrive.vhdx'
+    $SizeMB = 51200
+    . ([scriptblock]::Create($commandAssignment.Extent.Text))
+    . ([scriptblock]::Create($commandWrite.Extent.Text))
+    $actualBytes = [IO.File]::ReadAllBytes($DiskPartScript)
+    $expectedText = "create vdisk file=`"C:\Dev Drive\DevDrive.vhdx`" maximum=51200 type=expandable`r`nexit`r`n"
+    $expectedBytes = [Text.Encoding]::ASCII.GetBytes($expectedText)
+    if ([Convert]::ToBase64String($actualBytes) -ne [Convert]::ToBase64String($expectedBytes)) {
+        throw 'DiskPart file must contain the quoted path, ASCII without a BOM, and CRLF line endings.'
+    }
+}
+finally {
+    Remove-Item -LiteralPath $DiskPartScript -Force
+}
+Write-Host 'PASS: DiskPart command-file bytes, quoted path, and Windows line endings.'
+
 $functionAst = $ast.Find({ param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-LetterAvailable'
 }, $true)
