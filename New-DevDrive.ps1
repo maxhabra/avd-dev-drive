@@ -181,7 +181,7 @@ try {
     $DiskImage = Get-DiskImage -ImagePath $VhdPath
     if (-not $DiskImage.Attached) {
         Write-Host 'Mounting VHDX...'
-        Mount-DiskImage -ImagePath $VhdPath -NoDriveLetter -Access ReadWrite | Out-Null
+        Mount-DiskImage -ImagePath $VhdPath -NoDriveLetter -Access ReadWrite -ErrorAction Stop | Out-Null
     }
     else {
         Write-Host 'VHDX is already mounted.'
@@ -199,7 +199,7 @@ try {
             throw 'The new VHDX is not blank. Refusing to initialize or format it.'
         }
         Write-Host 'Initializing new disk as GPT...'
-        Initialize-Disk -Number $Disk.Number -PartitionStyle GPT | Out-Null
+        Initialize-Disk -Number $Disk.Number -PartitionStyle GPT -ErrorAction Stop | Out-Null
     }
 
     # ------------------------------------------------------------
@@ -207,7 +207,7 @@ try {
     # ------------------------------------------------------------
     if (-not $VhdExists) {
         Write-Host 'Creating data partition...'
-        $Partition = New-Partition -DiskNumber $Disk.Number -UseMaximumSize
+        $Partition = New-Partition -DiskNumber $Disk.Number -UseMaximumSize -ErrorAction Stop
     }
     else {
         Write-Host 'Inspecting existing data partition (no formatting)...'
@@ -233,7 +233,11 @@ try {
             -DevDrive `
             -FileSystem ReFS `
             -NewFileSystemLabel $VolumeLabel `
-            -Confirm:$false
+            -Confirm:$false `
+            -ErrorAction Stop
+        if ($null -eq $Volume -or $Volume.FileSystem -ne 'ReFS') {
+            throw 'Formatting did not return a ReFS volume. Stopping before drive-letter assignment.'
+        }
     }
     else {
         Write-Host 'Keeping the existing filesystem and label.'
@@ -249,7 +253,8 @@ try {
         Set-Partition `
             -DiskNumber $Disk.Number `
             -PartitionNumber $Partition.PartitionNumber `
-            -NewDriveLetter $DriveLetter
+            -NewDriveLetter $DriveLetter `
+            -ErrorAction Stop
     }
     else {
         Write-Host "Drive ${DriveLetter}: already belongs to this VHDX."

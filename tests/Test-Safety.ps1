@@ -82,3 +82,44 @@ $script:pathExists = $false
 $script:parts = @([pscustomobject]@{ DriveLetter = 'Y'; DiskNumber = 4; PartitionNumber = 1 })
 Assert-LetterAvailable
 Write-Host 'PASS: PowerShell syntax and 10 drive-letter safety scenarios.'
+
+# Exercise the actual formatting branch. A provider error or empty result must
+# prevent execution from reaching the subsequent drive-letter assignment step.
+$formatBranch = $ast.Find({ param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+    $node.Extent.Text -like '*$Volume = Format-Volume*'
+}, $true)
+if ($null -eq $formatBranch) { throw 'Cannot locate formatting branch.' }
+$formatBlock = [scriptblock]::Create($formatBranch.Extent.Text)
+$VhdExists = $false
+$Partition = [pscustomobject]@{ DiskNumber = 3; PartitionNumber = 2 }
+$VolumeLabel = 'Dev Drive'
+function Format-Volume {
+    [CmdletBinding(SupportsShouldProcess)]
+    param($Partition, [switch] $DevDrive, $FileSystem, $NewFileSystemLabel)
+    switch ($script:formatScenario) {
+        'Error' { Write-Error 'Not Supported' }
+        'Empty' { return }
+        'WrongFilesystem' { [pscustomobject]@{ FileSystem = 'NTFS' } }
+        'Success' { [pscustomobject]@{ FileSystem = 'ReFS' } }
+    }
+}
+# Ensure the explicit -ErrorAction Stop works even with a Continue preference.
+$ErrorActionPreference = 'Continue'
+foreach ($scenario in @('Error', 'Empty', 'WrongFilesystem')) {
+    $script:formatScenario = $scenario
+    $reachedAssignment = $false
+    $caughtFailure = $false
+    try {
+        & $formatBlock
+        $reachedAssignment = $true
+    }
+    catch { $caughtFailure = $true }
+    if (-not $caughtFailure -or $reachedAssignment) {
+        throw "Formatting scenario '$scenario' did not stop before assignment."
+    }
+}
+$ErrorActionPreference = 'Stop'
+$script:formatScenario = 'Success'
+& $formatBlock
+Write-Host 'PASS: format errors, missing output, and non-ReFS output stop; ReFS success proceeds.'
