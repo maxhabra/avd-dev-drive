@@ -6,12 +6,14 @@ Create or reuse a Windows 11 Dev Drive on an Azure Virtual Desktop (AVD) session
 
 | Parameter | Default |
 | --- | --- |
-| `Path` | `C:\DevDrive\DevDrive.vhdx` |
+| `VhdPath` | `C:\DevDrive\DevDrive.vhdx` |
 | `DriveLetter` | `X` |
 | `SizeGB` | `50` (minimum; PowerShell GB units, 1 GB = 1,073,741,824 bytes) |
-| `Name` | `Dev Drive` |
+| `VolumeLabel` | `Dev Drive` |
 
 New disks are dynamically expanding VHDX files, formatted as ReFS with the Dev Drive designation. The VHDX capacity is 50 GB; usable volume capacity is slightly smaller due to partition/filesystem overhead.
+
+Edit the defaults in the configuration block at the top of the script, or supply them as command-line parameters. The script is organized into numbered steps with progress messages. The previous `-Path` and `-Name` parameter names remain available as aliases.
 
 ## Run
 
@@ -25,7 +27,7 @@ Open **64-bit PowerShell as Administrator** in the downloaded repository folder:
 .\New-DevDrive.ps1
 
 # Explicit configuration
-.\New-DevDrive.ps1 -Path 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -Name 'Dev Drive'
+.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -VolumeLabel 'Dev Drive'
 ```
 
 The script requires PowerShell 5.1 or later and a Windows build with `Format-Volume -DevDrive` support (Windows 11 build 22621.2338 or later). Enterprise policy must permit Dev Drive. It does not enable Dev Drive through policy changes or alter antivirus settings. Hyper-V PowerShell tools and nested virtualization are not required.
@@ -37,7 +39,7 @@ The script requires PowerShell 5.1 or later and a Windows build with `Format-Vol
 - If the VHDX is already mounted at the requested letter, accepts that assignment and reports its status.
 - If the letter belongs to another resource, stops before creating or mounting a VHDX.
 - If the VHDX exists but is detached, attempts to attach it without automatically assigning a letter. It requires exactly one non-reserved partition containing ReFS, then assigns the requested letter. An existing different letter on that partition is replaced.
-- Existing files are never initialized, resized, relabeled, or formatted. `SizeGB` and `Name` apply only to new VHDX files.
+- Existing files are never initialized, resized, relabeled, or formatted. `SizeGB` and `VolumeLabel` apply only to new VHDX files.
 - For new VHDX files, checks backing-volume free space (requested capacity plus 256 MB), creates the parent folder if necessary, and formats only the newly created partition.
 - Rechecks letter availability before assignment and displays `fsutil devdrv query` output. Review that output for the volume's Dev Drive designation and trust status; ReFS alone does not establish the designation.
 - Stops on errors with exit code 1. Files and attachments are retained for inspection, including after partial creation. A later run will not automatically format an incomplete VHDX.

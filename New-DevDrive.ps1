@@ -6,12 +6,16 @@ Creates a Dev Drive or mounts the existing VHDX without formatting it.
 .EXAMPLE
 .\New-DevDrive.ps1
 .EXAMPLE
-.\New-DevDrive.ps1 -Path 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -Name 'Dev Drive'
+.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -VolumeLabel 'Dev Drive'
 #>
+# ------------------------------------------------------------
+# Configuration - edit these defaults or pass parameters
+# ------------------------------------------------------------
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidatePattern('^[A-Za-z]:\\[^"\r\n]*\.vhdx$')]
-    [string] $Path = 'C:\DevDrive\DevDrive.vhdx',
+    [Alias('Path')]
+    [string] $VhdPath = 'C:\DevDrive\DevDrive.vhdx',
 
     [ValidatePattern('^[D-Zd-z]$')]
     [string] $DriveLetter = 'X',
@@ -21,12 +25,14 @@ param(
 
     [ValidateNotNullOrEmpty()]
     [ValidateLength(1, 32)]
-    [string] $Name = 'Dev Drive'
+    [Alias('Name')]
+    [string] $VolumeLabel = 'Dev Drive'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Reused before mounting and immediately before assigning the letter.
 function Assert-LetterAvailable {
     param($ExpectedPartition = $null)
 
@@ -51,12 +57,18 @@ function Assert-LetterAvailable {
 }
 
 try {
+    Write-Host 'Setting up Dev Drive...'
+
+    # ------------------------------------------------------------
+    # 1. Check Windows and PowerShell requirements
+    # ------------------------------------------------------------
+    Write-Host 'Checking Windows and PowerShell requirements...'
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) {
         throw 'Run this script in 64-bit PowerShell on Windows 11 as Administrator.'
     }
-    $version = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
-    $build = [int] $version.CurrentBuildNumber
-    if ($build -lt 22621 -or ($build -eq 22621 -and [int] $version.UBR -lt 2338)) {
+    $WindowsVersion = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $WindowsBuild = [int] $WindowsVersion.CurrentBuildNumber
+    if ($WindowsBuild -lt 22621 -or ($WindowsBuild -eq 22621 -and [int] $WindowsVersion.UBR -lt 2338)) {
         throw 'Dev Drive requires Windows 11 build 22621.2338 or later.'
     }
     Import-Module Storage -ErrorAction Stop
@@ -64,102 +76,174 @@ try {
         throw 'The installed Storage module does not support Format-Volume -DevDrive.'
     }
     $DriveLetter = $DriveLetter.ToUpperInvariant()
-    $Path = [IO.Path]::GetFullPath($Path)
-    $exists = Test-Path -LiteralPath $Path
-    $partition = $null
-    $disk = $null
+    $VhdPath = [IO.Path]::GetFullPath($VhdPath)
 
-    if ($exists) {
-        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-            throw "The VHDX path is not a file: $Path"
+    # ------------------------------------------------------------
+    # 2. Check the VHDX and requested drive letter
+    # ------------------------------------------------------------
+    Write-Host "Checking '$VhdPath' and ${DriveLetter}:..."
+    $VhdExists = Test-Path -LiteralPath $VhdPath
+    $Partition = $null
+    $Disk = $null
+
+    if ($VhdExists) {
+        if (-not (Test-Path -LiteralPath $VhdPath -PathType Leaf)) {
+            throw "The VHDX path is not a file: $VhdPath"
         }
-        $image = Get-DiskImage -ImagePath $Path
-        if ($image.Attached) {
-            $disk = $image | Get-Disk
-            $candidates = @(Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne 'Reserved' })
-            if ($candidates.Count -ne 1) {
+        $DiskImage = Get-DiskImage -ImagePath $VhdPath
+        if ($DiskImage.Attached) {
+            $Disk = $DiskImage | Get-Disk
+            $DataPartitions = @(Get-Partition -DiskNumber $Disk.Number | Where-Object { $_.Type -ne 'Reserved' })
+            if ($DataPartitions.Count -ne 1) {
                 throw 'The existing VHDX must have exactly one data partition. No formatting was attempted.'
             }
-            $partition = $candidates[0]
+            $Partition = $DataPartitions[0]
         }
     }
-    Assert-LetterAvailable -ExpectedPartition $partition
+    Assert-LetterAvailable -ExpectedPartition $Partition
 
-    if (-not $exists) {
+    # ------------------------------------------------------------
+    # 3. Check free space for a new VHDX
+    # ------------------------------------------------------------
+    if (-not $VhdExists) {
         # Keep the requested VHDX capacity exact. Its usable volume is slightly smaller.
-        $sizeBytes = [uint64] $SizeGB * 1GB
-        $hostVolume = Get-Volume -FilePath ([IO.Path]::GetPathRoot($Path))
-        if ($hostVolume.SizeRemaining -lt ($sizeBytes + 256MB)) {
+        $SizeBytes = [uint64] $SizeGB * 1GB
+        $BackingVolume = Get-Volume -FilePath ([IO.Path]::GetPathRoot($VhdPath))
+        if ($BackingVolume.SizeRemaining -lt ($SizeBytes + 256MB)) {
             throw "The backing volume needs at least $SizeGB GB plus 256 MB of free space."
         }
     }
 
-    $action = if ($exists) { "Mount existing VHDX at ${DriveLetter}: without formatting" } else {
-        "Create a $SizeGB GB dynamic VHDX and format its new volume as '$Name' at ${DriveLetter}:"
+    # One approval boundary also makes -WhatIf skip all disk changes.
+    $Action = if ($VhdExists) { "Mount existing VHDX at ${DriveLetter}: without formatting" } else {
+        "Create a $SizeGB GB dynamic VHDX and format its new volume as '$VolumeLabel' at ${DriveLetter}:"
     }
-    if (-not $PSCmdlet.ShouldProcess($Path, $action)) { return }
+    if (-not $PSCmdlet.ShouldProcess($VhdPath, $Action)) { return }
 
-    if (-not $exists) {
-        $parent = Split-Path -Parent $Path
-        if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-            New-Item -ItemType Directory -Path $parent | Out-Null
+    # ------------------------------------------------------------
+    # 4. Create the VHDX folder if needed
+    # ------------------------------------------------------------
+    if (-not $VhdExists) {
+        $VhdFolder = Split-Path -Parent $VhdPath
+        if (-not (Test-Path -LiteralPath $VhdFolder -PathType Container)) {
+            Write-Host "Creating folder: $VhdFolder"
+            New-Item -ItemType Directory -Path $VhdFolder | Out-Null
         }
+    }
+
+    # ------------------------------------------------------------
+    # 5. Create a dynamic VHDX, or reuse the existing file
+    # ------------------------------------------------------------
+    if (-not $VhdExists) {
+        Write-Host "Creating $SizeGB GB dynamic VHDX: $VhdPath"
         # DiskPart is built into Windows; no Hyper-V module or nested virtualization needed.
-        $diskPartFile = [IO.Path]::GetTempFileName()
+        $DiskPartScript = [IO.Path]::GetTempFileName()
         try {
-            $maximumMB = [uint64] $SizeGB * 1024
-            @("create vdisk file=`"$Path`" maximum=$maximumMB type=expandable", 'exit') |
-                Set-Content -LiteralPath $diskPartFile -Encoding Unicode
-            $output = & "$env:SystemRoot\System32\diskpart.exe" /s $diskPartFile 2>&1
-            $code = $LASTEXITCODE
-            Write-Verbose ($output -join [Environment]::NewLine)
-            if ($code -ne 0 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-                throw "VHDX creation failed (DiskPart exit $code): $($output -join ' ')"
+            $SizeMB = [uint64] $SizeGB * 1024
+            @("create vdisk file=`"$VhdPath`" maximum=$SizeMB type=expandable", 'exit') |
+                Set-Content -LiteralPath $DiskPartScript -Encoding Unicode
+            $DiskPartOutput = & "$env:SystemRoot\System32\diskpart.exe" /s $DiskPartScript 2>&1
+            $DiskPartExitCode = $LASTEXITCODE
+            Write-Verbose ($DiskPartOutput -join [Environment]::NewLine)
+            if ($DiskPartExitCode -ne 0 -or -not (Test-Path -LiteralPath $VhdPath -PathType Leaf)) {
+                throw "VHDX creation failed (DiskPart exit $DiskPartExitCode): $($DiskPartOutput -join ' ')"
             }
         }
         finally {
-            Remove-Item -LiteralPath $diskPartFile -Force
+            Remove-Item -LiteralPath $DiskPartScript -Force
         }
     }
-
-    $image = Get-DiskImage -ImagePath $Path
-    if (-not $image.Attached) {
-        Mount-DiskImage -ImagePath $Path -NoDriveLetter -Access ReadWrite | Out-Null
+    else {
+        Write-Host "Reusing existing VHDX: $VhdPath"
     }
-    $disk = Get-DiskImage -ImagePath $Path | Get-Disk
-    if ($disk.IsBoot -or $disk.IsSystem -or $disk.IsReadOnly -or $disk.IsOffline) {
+
+    # ------------------------------------------------------------
+    # 6. Mount the VHDX and identify its disk
+    # ------------------------------------------------------------
+    $DiskImage = Get-DiskImage -ImagePath $VhdPath
+    if (-not $DiskImage.Attached) {
+        Write-Host 'Mounting VHDX...'
+        Mount-DiskImage -ImagePath $VhdPath -NoDriveLetter -Access ReadWrite | Out-Null
+    }
+    else {
+        Write-Host 'VHDX is already mounted.'
+    }
+    $Disk = Get-DiskImage -ImagePath $VhdPath | Get-Disk
+    if ($Disk.IsBoot -or $Disk.IsSystem -or $Disk.IsReadOnly -or $Disk.IsOffline) {
         throw 'The VHDX disk is a system/boot disk, read-only, or offline. Stopping without changing disk flags.'
     }
 
-    if (-not $exists) {
-        if ($disk.PartitionStyle -ne 'RAW') {
+    # ------------------------------------------------------------
+    # 7. Initialize only a newly created disk
+    # ------------------------------------------------------------
+    if (-not $VhdExists) {
+        if ($Disk.PartitionStyle -ne 'RAW') {
             throw 'The new VHDX is not blank. Refusing to initialize or format it.'
         }
-        Initialize-Disk -Number $disk.Number -PartitionStyle GPT | Out-Null
-        $partition = New-Partition -DiskNumber $disk.Number -UseMaximumSize
-        # Target the partition object, never a drive letter that could belong to another disk.
-        $volume = Format-Volume -Partition $partition -DevDrive -FileSystem ReFS -NewFileSystemLabel $Name -Confirm:$false
+        Write-Host 'Initializing new disk as GPT...'
+        Initialize-Disk -Number $Disk.Number -PartitionStyle GPT | Out-Null
+    }
+
+    # ------------------------------------------------------------
+    # 8. Create a new partition, or inspect the existing partition
+    # ------------------------------------------------------------
+    if (-not $VhdExists) {
+        Write-Host 'Creating data partition...'
+        $Partition = New-Partition -DiskNumber $Disk.Number -UseMaximumSize
     }
     else {
-        $candidates = @(Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne 'Reserved' })
-        if ($candidates.Count -ne 1) {
+        Write-Host 'Inspecting existing data partition (no formatting)...'
+        $DataPartitions = @(Get-Partition -DiskNumber $Disk.Number | Where-Object { $_.Type -ne 'Reserved' })
+        if ($DataPartitions.Count -ne 1) {
             throw 'The existing VHDX must have exactly one data partition. It has not been formatted.'
         }
-        $partition = $candidates[0]
-        $volume = $partition | Get-Volume
-        if ($volume.FileSystem -ne 'ReFS') {
+        $Partition = $DataPartitions[0]
+        $Volume = $Partition | Get-Volume
+        if ($Volume.FileSystem -ne 'ReFS') {
             throw 'The existing volume is not ReFS. It has been attached but will not be reformatted or assigned the requested letter.'
         }
     }
 
-    # Recheck immediately before assignment, including after a potentially lengthy format.
-    Assert-LetterAvailable -ExpectedPartition $partition
-    if ($partition.DriveLetter -ne $DriveLetter) {
-        Set-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -NewDriveLetter $DriveLetter
+    # ------------------------------------------------------------
+    # 9. Format only the new partition as a Dev Drive
+    # ------------------------------------------------------------
+    if (-not $VhdExists) {
+        Write-Host "Formatting new partition as Dev Drive: $VolumeLabel"
+        # Target the partition object, never a drive letter that could belong to another disk.
+        $Volume = Format-Volume `
+            -Partition $Partition `
+            -DevDrive `
+            -FileSystem ReFS `
+            -NewFileSystemLabel $VolumeLabel `
+            -Confirm:$false
     }
-    $actual = Get-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber
-    $volume = $actual | Get-Volume
-    if ($actual.DriveLetter -ne $DriveLetter -or $volume.FileSystem -ne 'ReFS') {
+    else {
+        Write-Host 'Keeping the existing filesystem and label.'
+    }
+
+    # ------------------------------------------------------------
+    # 10. Assign the requested drive letter
+    # ------------------------------------------------------------
+    # Recheck immediately before assignment, including after a potentially lengthy format.
+    Assert-LetterAvailable -ExpectedPartition $Partition
+    if ($Partition.DriveLetter -ne $DriveLetter) {
+        Write-Host "Assigning drive letter ${DriveLetter}:..."
+        Set-Partition `
+            -DiskNumber $Disk.Number `
+            -PartitionNumber $Partition.PartitionNumber `
+            -NewDriveLetter $DriveLetter
+    }
+    else {
+        Write-Host "Drive ${DriveLetter}: already belongs to this VHDX."
+    }
+
+    # ------------------------------------------------------------
+    # 11. Verify the resulting drive and display its configuration
+    # ------------------------------------------------------------
+    Write-Host "Verifying ${DriveLetter}:..."
+    $MountedPartition = Get-Partition -DiskNumber $Disk.Number -PartitionNumber $Partition.PartitionNumber
+    $Volume = $MountedPartition | Get-Volume
+    if ($MountedPartition.DriveLetter -ne $DriveLetter -or $Volume.FileSystem -ne 'ReFS') {
         throw 'The resulting drive letter or filesystem did not match the expected configuration.'
     }
     # Print Windows' Dev Drive status without relying on localized output text.
@@ -167,12 +251,13 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw 'Windows could not confirm Dev Drive status. The VHDX remains attached; it was not reformatted if it already existed.'
     }
+    Write-Host "Dev Drive setup completed at ${DriveLetter}:"
     [pscustomobject]@{
-        Path = $Path
+        Path = $VhdPath
         Drive = "${DriveLetter}:"
-        Name = $volume.FileSystemLabel
-        VirtualDiskSizeGB = [math]::Round($disk.Size / 1GB, 2)
-        ReusedExistingVhdx = $exists
+        Name = $Volume.FileSystemLabel
+        VirtualDiskSizeGB = [math]::Round($Disk.Size / 1GB, 2)
+        ReusedExistingVhdx = $VhdExists
     }
 }
 catch {
