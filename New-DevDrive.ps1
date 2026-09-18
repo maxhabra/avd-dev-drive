@@ -86,8 +86,9 @@ try {
         throw 'Dev Drive requires Windows 11 build 22621.2338 or later.'
     }
     Import-Module Storage -ErrorAction Stop
-    if (-not (Get-Command Format-Volume).Parameters.ContainsKey('DevDrive')) {
-        throw 'The installed Storage module does not support Format-Volume -DevDrive.'
+    $FormatCommand = Join-Path $env:SystemRoot 'System32\format.com'
+    if (-not (Test-Path -LiteralPath $FormatCommand -PathType Leaf)) {
+        throw 'The Windows native formatter (format.com) is missing.'
     }
     $DriveLetter = $DriveLetter.ToUpperInvariant()
     $VhdPath = [IO.Path]::GetFullPath($VhdPath)
@@ -249,19 +250,19 @@ try {
     # ------------------------------------------------------------
     if (-not $VhdExists) {
         Write-Host "Formatting ${DriveLetter}: as Dev Drive: $VolumeLabel"
-        # Use Microsoft's documented drive-letter Dev Drive formatting path.
-        # PowerShell passes the label directly, including spaces, without native quoting.
-        $FormatParameters = @{
-            DriveLetter = $DriveLetter
-            DevDrive = $true
-            NewFileSystemLabel = $VolumeLabel
-            Confirm = $false
-            ErrorAction = 'Stop'
+        # The native formatter works on this AVD where Format-Volume returns Not Supported.
+        # Use a fixed label without spaces to avoid Windows PowerShell native quoting issues.
+        & $FormatCommand "${DriveLetter}:" /FS:ReFS /DevDrv /Q /V:DevDrive /Y | Out-Host
+        $FormatExitCode = $LASTEXITCODE
+        if ($FormatExitCode -ne 0) {
+            throw "Native Dev Drive formatting failed with exit code $FormatExitCode."
         }
-        $Volume = Format-Volume @FormatParameters
+        $Volume = Get-Volume -DriveLetter $DriveLetter -ErrorAction Stop
         if ($null -eq $Volume -or $Volume.FileSystem -ne 'ReFS') {
-            throw 'Formatting did not return a ReFS volume. Stopping before success verification.'
+            throw 'Native formatting did not produce a ReFS volume. Stopping before success verification.'
         }
+        # Set the requested label through PowerShell, where spaces are passed correctly.
+        Set-Volume -DriveLetter $DriveLetter -NewFileSystemLabel $VolumeLabel -ErrorAction Stop
     }
     else {
         Write-Host 'Keeping the existing filesystem and label.'

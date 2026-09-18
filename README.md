@@ -32,7 +32,7 @@ Open **64-bit PowerShell as Administrator** in the downloaded repository folder:
 .\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -VolumeLabel 'Dev Drive'
 ```
 
-The script requires PowerShell 5.1 or later and a Windows build with `Format-Volume -DevDrive` support (Windows 11 build 22621.2338 or later). Enterprise policy must permit Dev Drive. It does not enable Dev Drive through policy changes or alter antivirus settings. Hyper-V PowerShell tools and nested virtualization are not required.
+The script requires PowerShell 5.1 or later and a Windows build with native Dev Drive formatting support (Windows 11 build 22621.2338 or later). Enterprise policy must permit Dev Drive. It does not enable Dev Drive through policy changes or alter antivirus settings. Hyper-V PowerShell tools and nested virtualization are not required.
 
 ## Checks and repeat runs
 
@@ -43,7 +43,7 @@ The script requires PowerShell 5.1 or later and a Windows build with `Format-Vol
 - If the VHDX exists but is detached, attempts to attach it without automatically assigning a letter. It requires exactly one non-reserved partition containing ReFS, then assigns the requested letter. An existing different letter on that partition is replaced.
 - Existing files are never initialized, resized, relabeled, or formatted. `SizeGB` and `VolumeLabel` apply only to new VHDX files.
 - For new VHDX files, checks backing-volume free space (requested VHDX capacity), creates the parent folder if necessary, and formats only the newly created partition.
-- Assigns the requested letter before formatting a new volume, verifies that it resolves to the exact VHDX disk and partition, then uses `Format-Volume -DriveLetter ... -DevDrive`. The `Dev Drive` label is passed directly as a PowerShell string.
+- Assigns the requested letter before formatting a new volume, verifies that it resolves to the exact VHDX disk and partition, then uses `format.com X: /FS:ReFS /DevDrv /Q /V:DevDrive /Y`. It checks the exit code and ReFS result before applying the requested label with `Set-Volume`. This avoids the `Format-Volume` failure observed on the tested AVD and native argument quoting problems with labels containing spaces.
 - Rechecks letter availability before assignment and displays `fsutil devdrv query` output. Review that output for the volume's Dev Drive designation and trust status; ReFS alone does not establish the designation.
 - Stops on errors with exit code 1. Files and attachments are retained for inspection, including after partial creation. A later run will not automatically format an incomplete VHDX.
 

@@ -130,23 +130,33 @@ function Set-Partition {
     }
     $script:target.DriveLetter = $NewDriveLetter
 }
-function Format-Volume {
-    [CmdletBinding(SupportsShouldProcess)]
-    param($DriveLetter, [switch] $DevDrive, $NewFileSystemLabel)
+function Invoke-TestFormat {
     if (($script:events -join ',') -notmatch 'Verify$' -or $script:target.DriveLetter -ne 'X') {
         throw 'Format ran before assignment and verification.'
     }
-    if ($DriveLetter -ne 'X' -or -not $DevDrive -or $NewFileSystemLabel -ne 'Dev Drive') {
-        throw 'Wrong format arguments or label.'
+    if (($args -join ' ') -ne 'X: /FS:ReFS /DevDrv /Q /V:DevDrive /Y') {
+        throw 'Wrong native format arguments.'
     }
     $script:events.Add('Format')
+    $global:LASTEXITCODE = if ($script:scenario -eq 'FormatError') { 4 } else { 0 }
+}
+function Get-Volume {
+    [CmdletBinding()]
+    param($DriveLetter)
+    if (-not $PSBoundParameters.ContainsKey('DriveLetter')) { return }
     switch ($script:scenario) {
-        'FormatError' { Write-Error 'Not Supported' }
         'EmptyFormat' { return }
         'WrongFilesystem' { [pscustomobject]@{ FileSystem = 'NTFS' } }
         default { [pscustomobject]@{ FileSystem = 'ReFS' } }
     }
 }
+function Set-Volume {
+    [CmdletBinding()]
+    param($DriveLetter, $NewFileSystemLabel)
+    if ($DriveLetter -ne 'X' -or $NewFileSystemLabel -ne 'Dev Drive') { throw 'Incorrect label arguments.' }
+    $script:events.Add('Label')
+}
+$FormatCommand = 'Invoke-TestFormat'
 $script:volumes = @()
 $script:logical = @()
 $script:drives = @()
@@ -167,11 +177,12 @@ foreach ($case in @('Success', 'Existing', 'Collision', 'AssignmentError', 'Wron
     $ErrorActionPreference = 'Stop'
     if ($case -in @('Success', 'Existing')) {
         if ($null -ne $caught) { throw $caught }
-        $expectedEvents = if ($case -eq 'Success') { 'Assign,Verify,Format' } else { 'Verify' }
+        $expectedEvents = if ($case -eq 'Success') { 'Assign,Verify,Format,Label' } else { 'Verify' }
         if (($script:events -join ',') -ne $expectedEvents) { throw "Incorrect order for $case" }
     }
     else {
         if ($null -eq $caught) { throw "Expected failure for $case" }
+        if ($script:events.Contains('Label')) { throw "Label applied despite failure for $case" }
         if ($case -notin @('FormatError', 'EmptyFormat', 'WrongFilesystem') -and $script:events.Contains('Format')) {
             throw "Unsafe formatting occurred for $case"
         }
