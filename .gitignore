@@ -1,0 +1,18 @@
+# Virtual disks and runtime output
+*.vhd
+*.vhdx
+*.avhd
+*.avhdx
+*.log
+logs/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
