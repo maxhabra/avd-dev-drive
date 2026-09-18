@@ -12,14 +12,15 @@ Script sequence:
   - Check free space when creating a new VHDX.
   - Create the folder and dynamic VHDX if needed; otherwise reuse the file.
   - Mount the VHDX if needed and identify its disk.
-  - Initialize, partition, and format only a newly created VHDX as a Dev Drive.
+  - Initialize and partition only a newly created VHDX.
     For an existing VHDX, inspect its partition without formatting it.
-  - Recheck availability and assign the requested drive letter if needed.
+  - Recheck availability, assign the drive letter, and verify its disk/partition.
+  - Format only a newly created VHDX through the verified drive letter.
   - Verify the drive and display its configuration and Dev Drive status.
 .EXAMPLE
 .\New-DevDrive.ps1
 .EXAMPLE
-.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 52 -VolumeLabel 'Dev Drive'
+.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -VolumeLabel 'Dev Drive'
 #>
 # ------------------------------------------------------------
 # Configuration - edit these defaults or pass parameters
@@ -223,44 +224,47 @@ try {
     }
 
     # ------------------------------------------------------------
-    # 9. Format only the new partition as a Dev Drive
+    # 9. Assign and verify the requested drive letter before formatting
+    # ------------------------------------------------------------
+    Assert-LetterAvailable -ExpectedPartition $Partition
+    if ($Partition.DriveLetter -ne $DriveLetter) {
+        Write-Host "Assigning drive letter ${DriveLetter}:..."
+        Set-Partition -DiskNumber $Disk.Number -PartitionNumber $Partition.PartitionNumber -NewDriveLetter $DriveLetter -ErrorAction Stop
+    }
+    else {
+        Write-Host "Drive ${DriveLetter}: already belongs to this VHDX."
+    }
+
+    # Verify the letter resolves to this exact disk and partition before any format.
+    $LetterPartitions = @(Get-Partition -DriveLetter $DriveLetter -ErrorAction Stop)
+    if ($LetterPartitions.Count -ne 1 -or
+        $LetterPartitions[0].DiskNumber -ne $Disk.Number -or
+        $LetterPartitions[0].PartitionNumber -ne $Partition.PartitionNumber) {
+        throw "${DriveLetter}: does not resolve to the expected VHDX partition. Stopping before formatting."
+    }
+    $Partition = $LetterPartitions[0]
+
+    # ------------------------------------------------------------
+    # 10. Format only the new partition through its verified drive letter
     # ------------------------------------------------------------
     if (-not $VhdExists) {
-        Write-Host "Formatting new partition as Dev Drive: $VolumeLabel"
-        if ($Partition.Size -lt 50GB) {
-            throw 'The new data partition is below the 50 GB minimum. Stopping before formatting.'
+        Write-Host "Formatting ${DriveLetter}: as Dev Drive: $VolumeLabel"
+        # Use Microsoft's documented drive-letter Dev Drive formatting path.
+        # PowerShell passes the label directly, including spaces, without native quoting.
+        $FormatParameters = @{
+            DriveLetter = $DriveLetter
+            DevDrive = $true
+            NewFileSystemLabel = $VolumeLabel
+            Confirm = $false
+            ErrorAction = 'Stop'
         }
-        # Target the partition object, never a drive letter that could belong to another disk.
-        $Volume = Format-Volume `
-            -Partition $Partition `
-            -DevDrive `
-            -FileSystem ReFS `
-            -NewFileSystemLabel $VolumeLabel `
-            -Confirm:$false `
-            -ErrorAction Stop
+        $Volume = Format-Volume @FormatParameters
         if ($null -eq $Volume -or $Volume.FileSystem -ne 'ReFS') {
-            throw 'Formatting did not return a ReFS volume. Stopping before drive-letter assignment.'
+            throw 'Formatting did not return a ReFS volume. Stopping before success verification.'
         }
     }
     else {
         Write-Host 'Keeping the existing filesystem and label.'
-    }
-
-    # ------------------------------------------------------------
-    # 10. Assign the requested drive letter
-    # ------------------------------------------------------------
-    # Recheck immediately before assignment, including after a potentially lengthy format.
-    Assert-LetterAvailable -ExpectedPartition $Partition
-    if ($Partition.DriveLetter -ne $DriveLetter) {
-        Write-Host "Assigning drive letter ${DriveLetter}:..."
-        Set-Partition `
-            -DiskNumber $Disk.Number `
-            -PartitionNumber $Partition.PartitionNumber `
-            -NewDriveLetter $DriveLetter `
-            -ErrorAction Stop
-    }
-    else {
-        Write-Host "Drive ${DriveLetter}: already belongs to this VHDX."
     }
 
     # ------------------------------------------------------------

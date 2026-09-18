@@ -30,13 +30,13 @@ try {
         }, $true)
         . ([scriptblock]::Create($assignment.Extent.Text))
     }
-    if ($SizeGB -ne 52 -or $VhdSizeBytes -ne 52GB -or $SizeMB -ne 53248) {
-        throw 'Default VHDX must be exactly 52 GiB (53248 MiB), with no extra capacity.'
+    if ($VhdSizeBytes -ne ($SizeGB * 1GB) -or $SizeMB -ne ($SizeGB * 1024)) {
+        throw 'VHDX must match the configured size with no extra capacity.'
     }
     . ([scriptblock]::Create($commandAssignment.Extent.Text))
     . ([scriptblock]::Create($commandWrite.Extent.Text))
     $actualBytes = [IO.File]::ReadAllBytes($DiskPartScript)
-    $expectedText = "create vdisk file=`"C:\Dev Drive\DevDrive.vhdx`" maximum=53248 type=expandable`r`nexit`r`n"
+    $expectedText = "create vdisk file=`"C:\Dev Drive\DevDrive.vhdx`" maximum=$SizeMB type=expandable`r`nexit`r`n"
     $expectedBytes = [Text.Encoding]::ASCII.GetBytes($expectedText)
     if ([Convert]::ToBase64String($actualBytes) -ne [Convert]::ToBase64String($expectedBytes)) {
         throw 'DiskPart file must contain the quoted path, ASCII without a BOM, and CRLF line endings.'
@@ -94,49 +94,87 @@ $script:parts = @([pscustomobject]@{ DriveLetter = 'Y'; DiskNumber = 4; Partitio
 Assert-LetterAvailable
 Write-Host 'PASS: PowerShell syntax and 10 drive-letter safety scenarios.'
 
-# Exercise the actual formatting branch. A provider error or empty result must
-# prevent execution from reaching the subsequent drive-letter assignment step.
-$formatBranch = $ast.Find({ param($node)
-    $node -is [System.Management.Automation.Language.IfStatementAst] -and
-    $node.Extent.Text -like '*$Volume = Format-Volume*'
-}, $true)
-if ($null -eq $formatBranch) { throw 'Cannot locate formatting branch.' }
-$formatBlock = [scriptblock]::Create($formatBranch.Extent.Text)
-$VhdExists = $false
-$Partition = [pscustomobject]@{ DiskNumber = 3; PartitionNumber = 2; Size = 50GB }
-$VolumeLabel = 'Dev Drive'
+# Execute the actual assignment/format sequence with fake Storage cmdlets.
+$scriptText = [IO.File]::ReadAllText($source)
+$sequenceStart = $scriptText.IndexOf('    # 9. Assign and verify')
+$sequenceEnd = $scriptText.IndexOf('    # 11. Verify', $sequenceStart)
+if ($sequenceStart -lt 0 -or $sequenceEnd -lt 0) { throw 'Cannot locate assignment/format sequence.' }
+$sequence = [scriptblock]::Create($scriptText.Substring($sequenceStart, $sequenceEnd - $sequenceStart))
+function Get-Partition {
+    [CmdletBinding()]
+    param($DriveLetter)
+    if ($PSBoundParameters.ContainsKey('DriveLetter')) {
+        $script:events.Add('Verify')
+        if ($script:scenario -eq 'WrongDisk') {
+            return [pscustomobject]@{ DiskNumber = 99; PartitionNumber = 2; DriveLetter = 'X' }
+        }
+        if ($script:scenario -eq 'WrongPartition') {
+            return [pscustomobject]@{ DiskNumber = 3; PartitionNumber = 99; DriveLetter = 'X' }
+        }
+        if ($script:scenario -eq 'MissingAssignment') { return }
+        if ($script:target.DriveLetter -eq $DriveLetter) { $script:target }
+        return
+    }
+    if ($script:scenario -eq 'Collision') {
+        return [pscustomobject]@{ DiskNumber = 99; PartitionNumber = 2; DriveLetter = 'X' }
+    }
+    $script:target
+}
+function Set-Partition {
+    [CmdletBinding()]
+    param($DiskNumber, $PartitionNumber, $NewDriveLetter)
+    $script:events.Add('Assign')
+    if ($script:scenario -eq 'AssignmentError') { Write-Error 'Assignment failed'; return }
+    if ($DiskNumber -ne 3 -or $PartitionNumber -ne 2 -or $NewDriveLetter -ne 'X') {
+        throw 'Wrong partition selected for assignment.'
+    }
+    $script:target.DriveLetter = $NewDriveLetter
+}
 function Format-Volume {
     [CmdletBinding(SupportsShouldProcess)]
-    param($Partition, [switch] $DevDrive, $FileSystem, $NewFileSystemLabel)
-    switch ($script:formatScenario) {
-        'Error' { Write-Error 'Not Supported' }
-        'Empty' { return }
+    param($DriveLetter, [switch] $DevDrive, $NewFileSystemLabel)
+    if (($script:events -join ',') -notmatch 'Verify$' -or $script:target.DriveLetter -ne 'X') {
+        throw 'Format ran before assignment and verification.'
+    }
+    if ($DriveLetter -ne 'X' -or -not $DevDrive -or $NewFileSystemLabel -ne 'Dev Drive') {
+        throw 'Wrong format arguments or label.'
+    }
+    $script:events.Add('Format')
+    switch ($script:scenario) {
+        'FormatError' { Write-Error 'Not Supported' }
+        'EmptyFormat' { return }
         'WrongFilesystem' { [pscustomobject]@{ FileSystem = 'NTFS' } }
-        'Success' { [pscustomobject]@{ FileSystem = 'ReFS' } }
+        default { [pscustomobject]@{ FileSystem = 'ReFS' } }
     }
 }
-# Ensure the explicit -ErrorAction Stop works even with a Continue preference.
-$ErrorActionPreference = 'Continue'
-foreach ($scenario in @('Error', 'Empty', 'WrongFilesystem')) {
-    $script:formatScenario = $scenario
-    $reachedAssignment = $false
-    $caughtFailure = $false
-    try {
-        & $formatBlock
-        $reachedAssignment = $true
+$script:volumes = @()
+$script:logical = @()
+$script:drives = @()
+$script:pathExists = $false
+foreach ($case in @('Success', 'Existing', 'Collision', 'AssignmentError', 'WrongDisk', 'WrongPartition', 'MissingAssignment', 'FormatError', 'EmptyFormat', 'WrongFilesystem')) {
+    $script:scenario = $case
+    $script:events = [System.Collections.Generic.List[string]]::new()
+    $script:target = [pscustomobject]@{ DiskNumber = 3; PartitionNumber = 2; DriveLetter = ''; Size = $SizeGB * 1GB - 17MB }
+    if ($case -eq 'Existing') { $script:target.DriveLetter = 'X' }
+    $Disk = [pscustomobject]@{ Number = 3 }
+    $Partition = $script:target
+    $VhdExists = $case -eq 'Existing'
+    $DriveLetter = 'X'
+    $VolumeLabel = 'Dev Drive'
+    $caught = $null
+    $ErrorActionPreference = 'Continue'
+    try { & $sequence } catch { $caught = $_ }
+    $ErrorActionPreference = 'Stop'
+    if ($case -in @('Success', 'Existing')) {
+        if ($null -ne $caught) { throw $caught }
+        $expectedEvents = if ($case -eq 'Success') { 'Assign,Verify,Format' } else { 'Verify' }
+        if (($script:events -join ',') -ne $expectedEvents) { throw "Incorrect order for $case" }
     }
-    catch { $caughtFailure = $true }
-    if (-not $caughtFailure -or $reachedAssignment) {
-        throw "Formatting scenario '$scenario' did not stop before assignment."
+    else {
+        if ($null -eq $caught) { throw "Expected failure for $case" }
+        if ($case -notin @('FormatError', 'EmptyFormat', 'WrongFilesystem') -and $script:events.Contains('Format')) {
+            throw "Unsafe formatting occurred for $case"
+        }
     }
 }
-$ErrorActionPreference = 'Stop'
-$script:formatScenario = 'Success'
-& $formatBlock
-Write-Host 'PASS: format errors, missing output, and non-ReFS output stop; ReFS success proceeds.'
-
-$Partition.Size = 50GB - 17MB
-$blockedUndersizedPartition = $false
-try { & $formatBlock } catch { $blockedUndersizedPartition = $true }
-if (-not $blockedUndersizedPartition) { throw 'An undersized partition must be rejected before formatting.' }
-Write-Host 'PASS: minimum partition size and exact 52 GiB VHDX capacity.'
+Write-Host 'PASS: 10 assignment/format scenarios, including exact target checks, label spaces, reuse, and errors.'

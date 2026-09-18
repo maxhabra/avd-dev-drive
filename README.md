@@ -8,12 +8,12 @@ Create or reuse a Windows 11 Dev Drive on an Azure Virtual Desktop (AVD) session
 | --- | --- |
 | `VhdPath` | `C:\DevDrive\DevDrive.vhdx` |
 | `DriveLetter` | `X` |
-| `SizeGB` | `52` (default; minimum parameter value is 50; PowerShell GB units, 1 GB = 1,073,741,824 bytes) |
+| `SizeGB` | `50` (default; minimum parameter value is 50; PowerShell GB units, 1 GB = 1,073,741,824 bytes) |
 | `VolumeLabel` | `Dev Drive` |
 
 VHDX paths used for new disks must contain only printable ASCII characters because the DiskPart command file uses ASCII encoding. Spaces are supported.
 
-New disks are dynamically expanding VHDX files, formatted as ReFS with the Dev Drive designation. `SizeGB` specifies the exact virtual disk capacity: 52 GiB by default (53,248 MiB), with no added capacity. The data partition uses the available disk space, so it is slightly smaller than the VHDX. The script checks that the partition is at least 50 GiB before formatting; a 50 GiB VHDX will fall below that threshold after partition overhead.
+New disks are dynamically expanding VHDX files, formatted as ReFS with the Dev Drive designation. `SizeGB` specifies the exact virtual disk capacity: 50 GiB by default (51,200 MiB), with no added capacity. The data partition uses the available disk space, so it is slightly smaller than the VHDX. The parameter must be at least 50 GB; Windows validates whether the resulting volume can be formatted as a Dev Drive.
 
 Edit the defaults in the configuration block at the top of the script, or supply them as command-line parameters. The script is organized into numbered steps with progress messages. The previous `-Path` and `-Name` parameter names remain available as aliases.
 
@@ -29,7 +29,7 @@ Open **64-bit PowerShell as Administrator** in the downloaded repository folder:
 .\New-DevDrive.ps1
 
 # Explicit configuration
-.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 52 -VolumeLabel 'Dev Drive'
+.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -VolumeLabel 'Dev Drive'
 ```
 
 The script requires PowerShell 5.1 or later and a Windows build with `Format-Volume -DevDrive` support (Windows 11 build 22621.2338 or later). Enterprise policy must permit Dev Drive. It does not enable Dev Drive through policy changes or alter antivirus settings. Hyper-V PowerShell tools and nested virtualization are not required.
@@ -43,6 +43,7 @@ The script requires PowerShell 5.1 or later and a Windows build with `Format-Vol
 - If the VHDX exists but is detached, attempts to attach it without automatically assigning a letter. It requires exactly one non-reserved partition containing ReFS, then assigns the requested letter. An existing different letter on that partition is replaced.
 - Existing files are never initialized, resized, relabeled, or formatted. `SizeGB` and `VolumeLabel` apply only to new VHDX files.
 - For new VHDX files, checks backing-volume free space (requested VHDX capacity), creates the parent folder if necessary, and formats only the newly created partition.
+- Assigns the requested letter before formatting a new volume, verifies that it resolves to the exact VHDX disk and partition, then uses `Format-Volume -DriveLetter ... -DevDrive`. The `Dev Drive` label is passed directly as a PowerShell string.
 - Rechecks letter availability before assignment and displays `fsutil devdrv query` output. Review that output for the volume's Dev Drive designation and trust status; ReFS alone does not establish the designation.
 - Stops on errors with exit code 1. Files and attachments are retained for inspection, including after partial creation. A later run will not automatically format an incomplete VHDX.
 
