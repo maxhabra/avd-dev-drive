@@ -21,11 +21,21 @@ if ($null -eq $commandAssignment -or $null -eq $commandWrite) {
 $DiskPartScript = [IO.Path]::GetTempFileName()
 try {
     $VhdPath = 'C:\Dev Drive\DevDrive.vhdx'
-    $SizeMB = 51200
+    $SizeGB = 50
+    foreach ($variableName in @('$PartitionSizeBytes', '$VhdSizeBytes', '$SizeMB')) {
+        $assignment = $ast.Find({ param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left.Extent.Text -eq $variableName
+        }, $true)
+        . ([scriptblock]::Create($assignment.Extent.Text))
+    }
+    if ($PartitionSizeBytes -ne 50GB -or $VhdSizeBytes -ne (50GB + 256MB)) {
+        throw 'Default data partition must be 50 GiB, with additional VHDX overhead.'
+    }
     . ([scriptblock]::Create($commandAssignment.Extent.Text))
     . ([scriptblock]::Create($commandWrite.Extent.Text))
     $actualBytes = [IO.File]::ReadAllBytes($DiskPartScript)
-    $expectedText = "create vdisk file=`"C:\Dev Drive\DevDrive.vhdx`" maximum=51200 type=expandable`r`nexit`r`n"
+    $expectedText = "create vdisk file=`"C:\Dev Drive\DevDrive.vhdx`" maximum=51456 type=expandable`r`nexit`r`n"
     $expectedBytes = [Text.Encoding]::ASCII.GetBytes($expectedText)
     if ([Convert]::ToBase64String($actualBytes) -ne [Convert]::ToBase64String($expectedBytes)) {
         throw 'DiskPart file must contain the quoted path, ASCII without a BOM, and CRLF line endings.'
@@ -92,7 +102,7 @@ $formatBranch = $ast.Find({ param($node)
 if ($null -eq $formatBranch) { throw 'Cannot locate formatting branch.' }
 $formatBlock = [scriptblock]::Create($formatBranch.Extent.Text)
 $VhdExists = $false
-$Partition = [pscustomobject]@{ DiskNumber = 3; PartitionNumber = 2 }
+$Partition = [pscustomobject]@{ DiskNumber = 3; PartitionNumber = 2; Size = 50GB }
 $VolumeLabel = 'Dev Drive'
 function Format-Volume {
     [CmdletBinding(SupportsShouldProcess)]
@@ -123,3 +133,9 @@ $ErrorActionPreference = 'Stop'
 $script:formatScenario = 'Success'
 & $formatBlock
 Write-Host 'PASS: format errors, missing output, and non-ReFS output stop; ReFS success proceeds.'
+
+$Partition.Size = 50GB - 17MB
+$blockedUndersizedPartition = $false
+try { & $formatBlock } catch { $blockedUndersizedPartition = $true }
+if (-not $blockedUndersizedPartition) { throw 'An undersized partition must be rejected before formatting.' }
+Write-Host 'PASS: minimum partition size and extra VHDX capacity.'

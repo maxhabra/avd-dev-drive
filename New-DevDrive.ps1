@@ -123,17 +123,18 @@ try {
         if ($VhdPath -match '[^\x20-\x7E]') {
             throw 'Creating a VHDX requires a path containing only printable ASCII characters.'
         }
-        # Keep the requested VHDX capacity exact. Its usable volume is slightly smaller.
-        $SizeBytes = [uint64] $SizeGB * 1GB
+        # SizeGB is the data partition size. Reserve extra virtual disk space for GPT.
+        $PartitionSizeBytes = [uint64] $SizeGB * 1GB
+        $VhdSizeBytes = $PartitionSizeBytes + 256MB
         $BackingVolume = Get-Volume -FilePath ([IO.Path]::GetPathRoot($VhdPath))
-        if ($BackingVolume.SizeRemaining -lt ($SizeBytes + 256MB)) {
-            throw "The backing volume needs at least $SizeGB GB plus 256 MB of free space."
+        if ($BackingVolume.SizeRemaining -lt ($VhdSizeBytes + 256MB)) {
+            throw "The backing volume needs at least $SizeGB GB plus 512 MB of free space."
         }
     }
 
     # One approval boundary also makes -WhatIf skip all disk changes.
     $Action = if ($VhdExists) { "Mount existing VHDX at ${DriveLetter}: without formatting" } else {
-        "Create a $SizeGB GB dynamic VHDX and format its new volume as '$VolumeLabel' at ${DriveLetter}:"
+        "Create a dynamic VHDX with a $SizeGB GB data partition and format it as '$VolumeLabel' at ${DriveLetter}:"
     }
     if (-not $PSCmdlet.ShouldProcess($VhdPath, $Action)) { return }
 
@@ -152,11 +153,11 @@ try {
     # 5. Create a dynamic VHDX, or reuse the existing file
     # ------------------------------------------------------------
     if (-not $VhdExists) {
-        Write-Host "Creating $SizeGB GB dynamic VHDX: $VhdPath"
+        Write-Host "Creating dynamic VHDX for a $SizeGB GB partition (plus 256 MB disk overhead): $VhdPath"
         # DiskPart is built into Windows; no Hyper-V module or nested virtualization needed.
         $DiskPartScript = [IO.Path]::GetTempFileName()
         try {
-            $SizeMB = [uint64] $SizeGB * 1024
+            $SizeMB = [uint64] ($VhdSizeBytes / 1MB)
             # DiskPart rejects the UTF-16 command file produced by -Encoding Unicode.
             $DiskPartCommands = "create vdisk file=`"$VhdPath`" maximum=$SizeMB type=expandable`r`nexit`r`n"
             $DiskPartCommands | Set-Content -LiteralPath $DiskPartScript -Encoding ASCII -NoNewline
@@ -207,7 +208,7 @@ try {
     # ------------------------------------------------------------
     if (-not $VhdExists) {
         Write-Host 'Creating data partition...'
-        $Partition = New-Partition -DiskNumber $Disk.Number -UseMaximumSize -ErrorAction Stop
+        $Partition = New-Partition -DiskNumber $Disk.Number -Size $PartitionSizeBytes -ErrorAction Stop
     }
     else {
         Write-Host 'Inspecting existing data partition (no formatting)...'
@@ -227,6 +228,9 @@ try {
     # ------------------------------------------------------------
     if (-not $VhdExists) {
         Write-Host "Formatting new partition as Dev Drive: $VolumeLabel"
+        if ($Partition.Size -lt 50GB) {
+            throw 'The new data partition is below the 50 GB minimum. Stopping before formatting.'
+        }
         # Target the partition object, never a drive letter that could belong to another disk.
         $Volume = Format-Volume `
             -Partition $Partition `
