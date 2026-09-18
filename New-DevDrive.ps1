@@ -34,7 +34,7 @@ param(
     [string] $DriveLetter = 'X',
 
     [ValidateRange(50, 65535)]
-    [int] $SizeGB = 52,
+    [int] $SizeGB = 50,
 
     [ValidateNotNullOrEmpty()]
     [ValidateLength(1, 32)]
