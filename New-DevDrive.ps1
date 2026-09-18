@@ -3,6 +3,19 @@
 <#
 .SYNOPSIS
 Creates a Dev Drive or mounts the existing VHDX without formatting it.
+.DESCRIPTION
+Script sequence:
+  - Set variables: VHDX path, drive letter, size, and volume label.
+  - Check Windows and PowerShell requirements.
+  - Check for an existing VHDX and ensure the drive letter is available
+    (or already belongs to this VHDX).
+  - Check free space when creating a new VHDX.
+  - Create the folder and dynamic VHDX if needed; otherwise reuse the file.
+  - Mount the VHDX if needed and identify its disk.
+  - Initialize, partition, and format only a newly created VHDX as a Dev Drive.
+    For an existing VHDX, inspect its partition without formatting it.
+  - Recheck availability and assign the requested drive letter if needed.
+  - Verify the drive and display its configuration and Dev Drive status.
 .EXAMPLE
 .\New-DevDrive.ps1
 .EXAMPLE
