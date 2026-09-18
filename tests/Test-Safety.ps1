@@ -21,21 +21,22 @@ if ($null -eq $commandAssignment -or $null -eq $commandWrite) {
 $DiskPartScript = [IO.Path]::GetTempFileName()
 try {
     $VhdPath = 'C:\Dev Drive\DevDrive.vhdx'
-    $SizeGB = 50
-    foreach ($variableName in @('$PartitionSizeBytes', '$VhdSizeBytes', '$SizeMB')) {
+    $sizeParameter = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'SizeGB' }
+    $SizeGB = $sizeParameter.DefaultValue.SafeGetValue()
+    foreach ($variableName in @('$VhdSizeBytes', '$SizeMB')) {
         $assignment = $ast.Find({ param($node)
             $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
             $node.Left.Extent.Text -eq $variableName
         }, $true)
         . ([scriptblock]::Create($assignment.Extent.Text))
     }
-    if ($PartitionSizeBytes -ne 50GB -or $VhdSizeBytes -ne (50GB + 256MB)) {
-        throw 'Default data partition must be 50 GiB, with additional VHDX overhead.'
+    if ($SizeGB -ne 52 -or $VhdSizeBytes -ne 52GB -or $SizeMB -ne 53248) {
+        throw 'Default VHDX must be exactly 52 GiB (53248 MiB), with no extra capacity.'
     }
     . ([scriptblock]::Create($commandAssignment.Extent.Text))
     . ([scriptblock]::Create($commandWrite.Extent.Text))
     $actualBytes = [IO.File]::ReadAllBytes($DiskPartScript)
-    $expectedText = "create vdisk file=`"C:\Dev Drive\DevDrive.vhdx`" maximum=51456 type=expandable`r`nexit`r`n"
+    $expectedText = "create vdisk file=`"C:\Dev Drive\DevDrive.vhdx`" maximum=53248 type=expandable`r`nexit`r`n"
     $expectedBytes = [Text.Encoding]::ASCII.GetBytes($expectedText)
     if ([Convert]::ToBase64String($actualBytes) -ne [Convert]::ToBase64String($expectedBytes)) {
         throw 'DiskPart file must contain the quoted path, ASCII without a BOM, and CRLF line endings.'
@@ -138,4 +139,4 @@ $Partition.Size = 50GB - 17MB
 $blockedUndersizedPartition = $false
 try { & $formatBlock } catch { $blockedUndersizedPartition = $true }
 if (-not $blockedUndersizedPartition) { throw 'An undersized partition must be rejected before formatting.' }
-Write-Host 'PASS: minimum partition size and extra VHDX capacity.'
+Write-Host 'PASS: minimum partition size and exact 52 GiB VHDX capacity.'

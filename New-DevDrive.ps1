@@ -19,7 +19,7 @@ Script sequence:
 .EXAMPLE
 .\New-DevDrive.ps1
 .EXAMPLE
-.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 50 -VolumeLabel 'Dev Drive'
+.\New-DevDrive.ps1 -VhdPath 'C:\DevDrive\DevDrive.vhdx' -DriveLetter X -SizeGB 52 -VolumeLabel 'Dev Drive'
 #>
 # ------------------------------------------------------------
 # Configuration - edit these defaults or pass parameters
@@ -34,7 +34,7 @@ param(
     [string] $DriveLetter = 'X',
 
     [ValidateRange(50, 65535)]
-    [int] $SizeGB = 50,
+    [int] $SizeGB = 52,
 
     [ValidateNotNullOrEmpty()]
     [ValidateLength(1, 32)]
@@ -123,18 +123,17 @@ try {
         if ($VhdPath -match '[^\x20-\x7E]') {
             throw 'Creating a VHDX requires a path containing only printable ASCII characters.'
         }
-        # SizeGB is the data partition size. Reserve extra virtual disk space for GPT.
-        $PartitionSizeBytes = [uint64] $SizeGB * 1GB
-        $VhdSizeBytes = $PartitionSizeBytes + 256MB
+        # SizeGB is the virtual disk capacity; no extra space is added.
+        $VhdSizeBytes = [uint64] $SizeGB * 1GB
         $BackingVolume = Get-Volume -FilePath ([IO.Path]::GetPathRoot($VhdPath))
-        if ($BackingVolume.SizeRemaining -lt ($VhdSizeBytes + 256MB)) {
-            throw "The backing volume needs at least $SizeGB GB plus 512 MB of free space."
+        if ($BackingVolume.SizeRemaining -lt $VhdSizeBytes) {
+            throw "The backing volume needs at least $SizeGB GB of free space."
         }
     }
 
     # One approval boundary also makes -WhatIf skip all disk changes.
     $Action = if ($VhdExists) { "Mount existing VHDX at ${DriveLetter}: without formatting" } else {
-        "Create a dynamic VHDX with a $SizeGB GB data partition and format it as '$VolumeLabel' at ${DriveLetter}:"
+        "Create a $SizeGB GB dynamic VHDX and format its data partition as '$VolumeLabel' at ${DriveLetter}:"
     }
     if (-not $PSCmdlet.ShouldProcess($VhdPath, $Action)) { return }
 
@@ -153,7 +152,7 @@ try {
     # 5. Create a dynamic VHDX, or reuse the existing file
     # ------------------------------------------------------------
     if (-not $VhdExists) {
-        Write-Host "Creating dynamic VHDX for a $SizeGB GB partition (plus 256 MB disk overhead): $VhdPath"
+        Write-Host "Creating $SizeGB GB dynamic VHDX: $VhdPath"
         # DiskPart is built into Windows; no Hyper-V module or nested virtualization needed.
         $DiskPartScript = [IO.Path]::GetTempFileName()
         try {
@@ -208,7 +207,7 @@ try {
     # ------------------------------------------------------------
     if (-not $VhdExists) {
         Write-Host 'Creating data partition...'
-        $Partition = New-Partition -DiskNumber $Disk.Number -Size $PartitionSizeBytes -ErrorAction Stop
+        $Partition = New-Partition -DiskNumber $Disk.Number -UseMaximumSize -ErrorAction Stop
     }
     else {
         Write-Host 'Inspecting existing data partition (no formatting)...'
