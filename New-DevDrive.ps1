@@ -287,6 +287,9 @@ try {
     }
 }
 catch {
-    Write-Error "Dev Drive setup failed: $($_.Exception.Message) Any VHDX created or attached by this run is retained for inspection." -ErrorAction Continue
+    # Preserve the storage provider's error ID, source line, and exception details.
+    # Replacing it with a message string hides the original failure behind WriteErrorException.
+    Write-Warning 'Dev Drive setup failed. Any VHDX created or attached by this run is retained for inspection.'
+    Write-Error -ErrorRecord $_ -ErrorAction Continue
     exit 1
 }
